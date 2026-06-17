@@ -1,39 +1,71 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require("discord.js");
-const fetch = require("node-fetch");
 
-// Use ENV variables (IMPORTANT for Render)
+// =====================
+// CONFIG (Render uses env vars)
+// =====================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const API_URL = "https://tier-api.onrender.com";
 
+// =====================
+// CLIENT
+// =====================
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// Slash command
+// =====================
+// SLASH COMMAND
+// =====================
 const commands = [
     new SlashCommandBuilder()
         .setName("tier")
         .setDescription("Set player tier")
-        .addStringOption(o => o.setName("player").setRequired(true))
-        .addStringOption(o => o.setName("kit").setRequired(true))
-        .addStringOption(o => o.setName("rank").setRequired(true))
-].map(c => c.toJSON());
+        .addStringOption(o =>
+            o.setName("player")
+                .setDescription("Player name")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("kit")
+                .setDescription("Kit name")
+                .setRequired(true)
+        )
+        .addStringOption(o =>
+            o.setName("rank")
+                .setDescription("Rank (HT1-LT3)")
+                .setRequired(true)
+        )
+].map(cmd => cmd.toJSON());
 
+// =====================
+// REGISTER COMMANDS
+// =====================
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 (async () => {
-    await rest.put(
-        Routes.applicationCommands(CLIENT_ID),
-        { body: commands }
-    );
-    console.log("Slash command registered");
+    try {
+        await rest.put(
+            Routes.applicationCommands(CLIENT_ID),
+            { body: commands }
+        );
+
+        console.log("Slash command registered");
+    } catch (err) {
+        console.error("Command register error:", err);
+    }
 })();
 
+// =====================
+// BOT READY
+// =====================
 client.once("ready", () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
+// =====================
+// COMMAND HANDLER
+// =====================
 client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
@@ -45,14 +77,16 @@ client.on("interactionCreate", async (interaction) => {
         try {
             const res = await fetch(`${API_URL}/set`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                    "Content-Type": "application/json"
+                },
                 body: JSON.stringify({ player, kit, rank })
             });
 
             const data = await res.json();
 
             if (!data.success) {
-                return interaction.reply("❌ Error: " + data.error);
+                return interaction.reply(`❌ Error: ${data.error}`);
             }
 
             return interaction.reply(
@@ -61,9 +95,12 @@ client.on("interactionCreate", async (interaction) => {
 
         } catch (err) {
             console.error(err);
-            return interaction.reply("❌ API error");
+            return interaction.reply("❌ API connection error");
         }
     }
 });
 
+// =====================
+// LOGIN
+// =====================
 client.login(TOKEN);
