@@ -17,99 +17,223 @@ const {
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const API_URL = "https://tier-api.onrender.com";
+const API_URL = process.env.API_URL || "https://tier-api.onrender.com";
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
 // =====================
-// GLOBAL PANEL STATE
+// CONFIG
 // =====================
+
+const BRAND = {
+    name: "SonarMC",
+    color: 0xff6a00,
+    website: "https://your-tierlist-site.com"
+};
+
+const TIER_META = {
+    HT1: { label: "HT1", emoji: "🔴", color: 0xff3b30, desc: "Highest Tier 1" },
+    HT2: { label: "HT2", emoji: "🟠", color: 0xff6a00, desc: "High Tier 2" },
+    HT3: { label: "HT3", emoji: "🟡", color: 0xffb300, desc: "High Tier 3" },
+    LT1: { label: "LT1", emoji: "🟢", color: 0xcddc39, desc: "Low Tier 1" },
+    LT2: { label: "LT2", emoji: "🔵", color: 0x00acc1, desc: "Low Tier 2" },
+    LT3: { label: "LT3", emoji: "⚫", color: 0x555555, desc: "Low Tier 3" }
+};
+
+const KIT_META = {
+    sword: { label: "Sword", emoji: "⚔️" },
+    axe: { label: "Axe", emoji: "🪓" },
+    spearMace: { label: "Spear / Mace", emoji: "🔱" },
+    elytraMace: { label: "Elytra Mace", emoji: "🪽" },
+    crystal: { label: "Crystal", emoji: "💎" }
+};
+
 const panelState = new Map();
 
 // =====================
-// COMMAND
+// HELPERS
 // =====================
-const commands = [
-    new SlashCommandBuilder()
-        .setName("tierpanel")
-        .setDescription("Open Tier Control Panel")
-].map(cmd => cmd.toJSON());
 
-// =====================
-// REGISTER
-// =====================
-const rest = new REST({ version: "10" }).setToken(TOKEN);
+function getHead(name) {
+    return `https://minotar.net/avatar/${encodeURIComponent(name)}/128`;
+}
 
-(async () => {
-    await rest.put(
-        Routes.applicationCommands(CLIENT_ID),
-        { body: commands }
-    );
-    console.log("Panel command registered");
-})();
+function tierLine(rank) {
+    if (!rank) return "`UNTESTED`";
+    const meta = TIER_META[rank];
+    return meta ? `${meta.emoji} **${rank}**` : `\`${rank}\``;
+}
 
-// =====================
-// READY
-// =====================
-client.once("ready", () => {
-    console.log(`Logged in as ${client.user.tag}`);
-});
+async function fetchAllPlayers() {
+    const res = await fetch(`${API_URL}/players`);
+    if (!res.ok) throw new Error("Failed to fetch players");
+    return res.json();
+}
 
-// =====================
-// BUILD PANEL
-// =====================
-function buildPanel(userId) {
+async function saveTier(player, kit, rank) {
+    const res = await fetch(`${API_URL}/set`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ player, kit, rank })
+    });
+
+    const json = await res.json().catch(() => null);
+    if (!json?.success) {
+        throw new Error(json?.error || "API rejected the update");
+    }
+
+    return json;
+}
+
+async function removePlayer(player) {
+    const res = await fetch(`${API_URL}/remove`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ player })
+    });
+
+    const json = await res.json().catch(() => null);
+    if (!json?.success) {
+        throw new Error(json?.error || "Failed to remove player");
+    }
+
+    return json;
+}
+
+function getPanelColor(state, status) {
+    if (status?.type === "success") return 0x43a047;
+    if (status?.type === "error") return 0xe53935;
+    if (state?.rank && TIER_META[state.rank]) return TIER_META[state.rank].color;
+    return BRAND.color;
+}
+
+function buildStatusBlock(status) {
+    if (!status?.message) return null;
+
+    const icons = { success: "✅", error: "❌", info: "ℹ️" };
+    return `${icons[status.type] || "ℹ️"} ${status.message}`;
+}
+
+function buildCurrentRanksBlock(playerData) {
+    if (!playerData) return null;
+
+    const lines = Object.entries(KIT_META).map(([key, kit]) => {
+        return `${kit.emoji} **${kit.label}** — ${tierLine(playerData[key])}`;
+    });
+
+    return lines.join("\n");
+}
+
+function buildPanel(userId, options = {}) {
     const state = panelState.get(userId) || {};
+    const { status, playerData } = options;
+
+    const playerName = state.player || null;
+    const kit = state.kit ? KIT_META[state.kit] : null;
+    const rank = state.rank ? TIER_META[state.rank] : null;
+
+    const ready = Boolean(playerName && state.kit && state.rank);
 
     const embed = new EmbedBuilder()
-        .setTitle("🏆 SonarMC Tier Panel")
-        .setColor("Orange")
+        .setAuthor({
+            name: `${BRAND.name} Tier Control`,
+            iconURL: "https://minotar.net/avatar/MHF_Question/64"
+        })
+        .setTitle("Rank Management Panel")
         .setDescription(
-            `Player: **${state.player || "None"}**\n` +
-            `Kit: **${state.kit || "None"}**\n` +
-            `Tier: **${state.rank || "None"}**`
-        );
+            [
+                "Set kit tiers for ranked players. Changes sync to the website instantly.",
+                buildStatusBlock(status)
+            ].filter(Boolean).join("\n\n")
+        )
+        .setColor(getPanelColor(state, status))
+        .addFields(
+            {
+                name: "👤 Player",
+                value: playerName ? `\`${playerName}\`` : "*No player selected*",
+                inline: true
+            },
+            {
+                name: "🎒 Kit",
+                value: kit ? `${kit.emoji} ${kit.label}` : "*Select a kit*",
+                inline: true
+            },
+            {
+                name: "🏅 Tier",
+                value: rank ? `${rank.emoji} **${rank.label}**` : "*Select a tier*",
+                inline: true
+            }
+        )
+        .setFooter({
+            text: `${BRAND.name} Tier List • ${ready ? "Ready to save" : "Complete all fields to save"}`
+        })
+        .setTimestamp();
+
+    if (playerName) {
+        embed.setThumbnail(getHead(playerName));
+    }
+
+    const currentRanks = buildCurrentRanksBlock(playerData);
+    if (currentRanks) {
+        embed.addFields({
+            name: "📋 Current Rankings",
+            value: currentRanks
+        });
+    }
 
     const kitMenu = new StringSelectMenuBuilder()
         .setCustomId("kit")
-        .setPlaceholder("Select Kit")
-        .addOptions([
-            { label: "Sword", value: "sword" },
-            { label: "Axe", value: "axe" },
-            { label: "SpearMace", value: "spearMace" },
-            { label: "ElytraMace", value: "elytraMace" },
-            { label: "Crystal", value: "crystal" }
-        ]);
+        .setPlaceholder(state.kit ? `${KIT_META[state.kit].emoji} ${KIT_META[state.kit].label}` : "Choose a kit")
+        .addOptions(
+            Object.entries(KIT_META).map(([value, kit]) => ({
+                label: kit.label,
+                value,
+                emoji: kit.emoji,
+                default: state.kit === value
+            }))
+        );
 
     const rankMenu = new StringSelectMenuBuilder()
         .setCustomId("rank")
-        .setPlaceholder("Select Tier")
-        .addOptions([
-            { label: "HT1", value: "HT1" },
-            { label: "HT2", value: "HT2" },
-            { label: "HT3", value: "HT3" },
-            { label: "LT1", value: "LT1" },
-            { label: "LT2", value: "LT2" },
-            { label: "LT3", value: "LT3" }
-        ]);
+        .setPlaceholder(state.rank ? `${TIER_META[state.rank].emoji} ${state.rank}` : "Choose a tier")
+        .addOptions(
+            Object.entries(TIER_META).map(([value, tier]) => ({
+                label: tier.label,
+                description: tier.desc,
+                value,
+                emoji: tier.emoji,
+                default: state.rank === value
+            }))
+        );
 
-    const buttons = new ActionRowBuilder().addComponents(
+    const controls = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("set_player")
-            .setLabel("Set Player")
+            .setLabel("Player")
+            .setEmoji("👤")
             .setStyle(ButtonStyle.Primary),
 
         new ButtonBuilder()
             .setCustomId("save")
-            .setLabel("Save")
-            .setStyle(ButtonStyle.Success),
+            .setLabel("Save Tier")
+            .setEmoji("💾")
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(!ready),
 
         new ButtonBuilder()
             .setCustomId("remove")
-            .setLabel("Remove Player")
+            .setLabel("Remove")
+            .setEmoji("🗑️")
             .setStyle(ButtonStyle.Danger)
+            .setDisabled(!playerName),
+
+        new ButtonBuilder()
+            .setCustomId("reset")
+            .setLabel("Reset")
+            .setEmoji("↩️")
+            .setStyle(ButtonStyle.Secondary)
     );
 
     return {
@@ -117,157 +241,224 @@ function buildPanel(userId) {
         components: [
             new ActionRowBuilder().addComponents(kitMenu),
             new ActionRowBuilder().addComponents(rankMenu),
-            buttons
+            controls
         ]
     };
 }
 
+async function refreshPlayerData(userId) {
+    const state = panelState.get(userId);
+    if (!state?.player) return null;
+
+    const players = await fetchAllPlayers();
+    return players[state.player] || null;
+}
+
+async function renderPanel(userId, status = null) {
+    let playerData = null;
+
+    try {
+        playerData = await refreshPlayerData(userId);
+    } catch {
+        // Keep panel usable even if API is slow/down
+    }
+
+    return buildPanel(userId, { status, playerData });
+}
+
 // =====================
-// INTERACTIONS
+// COMMANDS
 // =====================
+
+const commands = [
+    new SlashCommandBuilder()
+        .setName("tierpanel")
+        .setDescription("Open the SonarMC tier management panel")
+].map(cmd => cmd.toJSON());
+
+const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+(async () => {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log("Commands registered");
+})();
+
+// =====================
+// EVENTS
+// =====================
+
+client.once("ready", () => {
+    console.log(`Logged in as ${client.user.tag}`);
+});
+
 client.on("interactionCreate", async (interaction) => {
+    try {
+        if (interaction.isChatInputCommand() && interaction.commandName === "tierpanel") {
+            panelState.set(interaction.user.id, {});
 
-    // OPEN PANEL
-    if (interaction.isChatInputCommand() && interaction.commandName === "tierpanel") {
-
-        panelState.set(interaction.user.id, {});
-
-        return interaction.reply({
-            ...buildPanel(interaction.user.id),
-            ephemeral: true
-        });
-    }
-
-    // SET PLAYER MODAL OPEN
-    if (interaction.isButton() && interaction.customId === "set_player") {
-
-        const modal = new ModalBuilder()
-            .setCustomId("player_modal")
-            .setTitle("Set Player");
-
-        const input = new TextInputBuilder()
-            .setCustomId("player")
-            .setLabel("Player Name")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
-
-        return interaction.showModal(modal);
-    }
-
-    // PLAYER MODAL SUBMIT
-    if (interaction.type === InteractionType.ModalSubmit && interaction.customId === "player_modal") {
-
-        const player = interaction.fields.getTextInputValue("player");
-
-        const state = panelState.get(interaction.user.id) || {};
-        state.player = player;
-        panelState.set(interaction.user.id, state);
-
-        return interaction.reply({
-            ...buildPanel(interaction.user.id),
-            ephemeral: true
-        });
-    }
-
-    // KIT SELECT
-    if (interaction.isStringSelectMenu() && interaction.customId === "kit") {
-
-        const state = panelState.get(interaction.user.id) || {};
-        state.kit = interaction.values[0];
-        panelState.set(interaction.user.id, state);
-
-        return interaction.update(buildPanel(interaction.user.id));
-    }
-
-    // RANK SELECT
-    if (interaction.isStringSelectMenu() && interaction.customId === "rank") {
-
-        const state = panelState.get(interaction.user.id) || {};
-        state.rank = interaction.values[0];
-        panelState.set(interaction.user.id, state);
-
-        return interaction.update(buildPanel(interaction.user.id));
-    }
-
-    // SAVE
-    if (interaction.isButton() && interaction.customId === "save") {
-
-        const state = panelState.get(interaction.user.id);
-
-        if (!state?.player || !state?.kit || !state?.rank) {
             return interaction.reply({
-                content: "❌ Missing data",
+                ...(await renderPanel(interaction.user.id)),
                 ephemeral: true
             });
         }
 
-        try {
-            const res = await fetch(`${API_URL}/update`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(state)
-            });
+        if (interaction.isButton() && interaction.customId === "set_player") {
+            const modal = new ModalBuilder()
+                .setCustomId("player_modal")
+                .setTitle("Set Player");
 
-            const json = await res.json().catch(() => null);
+            const input = new TextInputBuilder()
+                .setCustomId("player")
+                .setLabel("Minecraft Username")
+                .setPlaceholder("e.g. Notch")
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true)
+                .setMaxLength(16);
 
-            if (!json?.success) {
-                return interaction.reply({
-                    content: "❌ API error",
-                    ephemeral: true
-                });
+            const state = panelState.get(interaction.user.id);
+            if (state?.player) {
+                input.setValue(state.player);
             }
 
-            return interaction.reply({
-                content: `✅ Saved ${state.player} → ${state.kit} = ${state.rank}`,
-                ephemeral: true
-            });
-
-        } catch (err) {
-            console.error(err);
-            return interaction.reply({
-                content: "❌ Server error",
-                ephemeral: true
-            });
-        }
-    }
-
-    // REMOVE PLAYER
-    if (interaction.isButton() && interaction.customId === "remove") {
-
-        const state = panelState.get(interaction.user.id);
-
-        if (!state?.player) {
-            return interaction.reply({
-                content: "❌ No player selected",
-                ephemeral: true
-            });
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
+            return interaction.showModal(modal);
         }
 
-        try {
-            await fetch(`${API_URL}/remove`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ player: state.player })
-            });
+        if (interaction.type === InteractionType.ModalSubmit && interaction.customId === "player_modal") {
+            const player = interaction.fields.getTextInputValue("player").trim();
 
-            return interaction.reply({
-                content: `🗑 Removed ${state.player}`,
-                ephemeral: true
-            });
+            if (!player) {
+                return interaction.update(
+                    await renderPanel(interaction.user.id, {
+                        type: "error",
+                        message: "Player name cannot be empty."
+                    })
+                );
+            }
 
-        } catch (err) {
-            console.error(err);
-            return interaction.reply({
-                content: "❌ Failed to remove",
-                ephemeral: true
-            });
+            const state = panelState.get(interaction.user.id) || {};
+            state.player = player;
+            panelState.set(interaction.user.id, state);
+
+            return interaction.update(
+                await renderPanel(interaction.user.id, {
+                    type: "info",
+                    message: `Selected player **${player}**. Choose a kit and tier, then save.`
+                })
+            );
         }
+
+        if (interaction.isStringSelectMenu() && interaction.customId === "kit") {
+            const state = panelState.get(interaction.user.id) || {};
+            state.kit = interaction.values[0];
+            panelState.set(interaction.user.id, state);
+
+            return interaction.update(await renderPanel(interaction.user.id));
+        }
+
+        if (interaction.isStringSelectMenu() && interaction.customId === "rank") {
+            const state = panelState.get(interaction.user.id) || {};
+            state.rank = interaction.values[0];
+            panelState.set(interaction.user.id, state);
+
+            return interaction.update(await renderPanel(interaction.user.id));
+        }
+
+        if (interaction.isButton() && interaction.customId === "reset") {
+            panelState.set(interaction.user.id, {});
+
+            return interaction.update(
+                await renderPanel(interaction.user.id, {
+                    type: "info",
+                    message: "Panel reset."
+                })
+            );
+        }
+
+        if (interaction.isButton() && interaction.customId === "save") {
+            const state = panelState.get(interaction.user.id);
+
+            if (!state?.player || !state?.kit || !state?.rank) {
+                return interaction.update(
+                    await renderPanel(interaction.user.id, {
+                        type: "error",
+                        message: "Select a player, kit, and tier before saving."
+                    })
+                );
+            }
+
+            await interaction.deferUpdate();
+
+            try {
+                await saveTier(state.player, state.kit, state.rank);
+
+                return interaction.editReply(
+                    await renderPanel(interaction.user.id, {
+                        type: "success",
+                        message: `Saved **${state.player}** → ${KIT_META[state.kit].label} = **${state.rank}**`
+                    })
+                );
+            } catch (err) {
+                console.error(err);
+
+                return interaction.editReply(
+                    await renderPanel(interaction.user.id, {
+                        type: "error",
+                        message: err.message || "Could not save to the API."
+                    })
+                );
+            }
+        }
+
+        if (interaction.isButton() && interaction.customId === "remove") {
+            const state = panelState.get(interaction.user.id);
+
+            if (!state?.player) {
+                return interaction.update(
+                    await renderPanel(interaction.user.id, {
+                        type: "error",
+                        message: "Select a player before removing."
+                    })
+                );
+            }
+
+            await interaction.deferUpdate();
+
+            try {
+                await removePlayer(state.player);
+                panelState.set(interaction.user.id, {});
+
+                return interaction.editReply(
+                    await renderPanel(interaction.user.id, {
+                        type: "success",
+                        message: `Removed **${state.player}** from the tier list.`
+                    })
+                );
+            } catch (err) {
+                console.error(err);
+
+                return interaction.editReply(
+                    await renderPanel(interaction.user.id, {
+                        type: "error",
+                        message: err.message || "Could not remove player."
+                    })
+                );
+            }
+        }
+    } catch (err) {
+        console.error("Interaction error:", err);
+
+        const payload = {
+            content: "❌ Something went wrong. Run `/tierpanel` again.",
+            ephemeral: true
+        };
+
+        if (interaction.deferred || interaction.replied) {
+            return interaction.followUp(payload);
+        }
+
+        return interaction.reply(payload);
     }
 });
 
-// =====================
-// LOGIN
-// =====================
 client.login(TOKEN);
