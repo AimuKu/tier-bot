@@ -12,10 +12,9 @@ const {
     StringSelectMenuBuilder,
     ButtonBuilder,
     ButtonStyle,
-    InteractionType
+    InteractionType,
+    MessageFlags
 } = require("discord.js");
-
-const fetch = require("node-fetch"); // ✅ FIX
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -25,9 +24,12 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
+const panelState = new Map();
+
 // =====================
 // CONFIG
 // =====================
+
 const BRAND = {
     name: "SonarMC",
     color: 0xff6a00
@@ -50,30 +52,24 @@ const KIT_META = {
     crystal: { label: "Crystal", emoji: "💎" }
 };
 
-const panelState = new Map();
-
 // =====================
-// HELPERS
+// API
 // =====================
-function getHead(name) {
-    return `https://minotar.net/avatar/${encodeURIComponent(name)}/128`;
-}
 
 async function fetchPlayers() {
     const res = await fetch(`${API_URL}/players`);
-    if (!res.ok) throw new Error("API failed");
+    if (!res.ok) return {};
     return res.json();
 }
 
-async function saveTier(player, kit, rank) {
+async function setTier(player, kit, rank) {
     const res = await fetch(`${API_URL}/set`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ player, kit, rank })
     });
 
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
+    return res.json();
 }
 
 async function removePlayer(player) {
@@ -83,41 +79,24 @@ async function removePlayer(player) {
         body: JSON.stringify({ player })
     });
 
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error);
+    return res.json();
 }
 
 // =====================
-// PANEL BUILDER (simplified)
+// PANEL
 // =====================
-function buildPanel(userId, players = {}, status = null) {
 
+function buildPanel(userId, status) {
     const state = panelState.get(userId) || {};
 
+    const ready = state.player && state.kit && state.rank;
+
     const embed = new EmbedBuilder()
-        .setTitle("SonarMC Tier Panel")
+        .setTitle("Tier Panel")
         .setColor(BRAND.color)
-        .setDescription(status ? status : "Manage player tiers");
+        .setDescription(status?.message || "Select a player, kit, and rank.");
 
-    const kitMenu = new StringSelectMenuBuilder()
-        .setCustomId("kit")
-        .setPlaceholder("Select kit")
-        .addOptions(Object.entries(KIT_META).map(([v, k]) => ({
-            label: k.label,
-            value: v,
-            emoji: k.emoji
-        })));
-
-    const rankMenu = new StringSelectMenuBuilder()
-        .setCustomId("rank")
-        .setPlaceholder("Select tier")
-        .addOptions(Object.entries(TIER_META).map(([v, t]) => ({
-            label: v,
-            value: v,
-            emoji: t.emoji
-        })));
-
-    const buttons = new ActionRowBuilder().addComponents(
+    const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("set_player")
             .setLabel("Player")
@@ -127,25 +106,25 @@ function buildPanel(userId, players = {}, status = null) {
             .setCustomId("save")
             .setLabel("Save")
             .setStyle(ButtonStyle.Success)
+            .setDisabled(!ready),
+
+        new ButtonBuilder()
+            .setCustomId("remove")
+            .setLabel("Remove")
+            .setStyle(ButtonStyle.Danger)
     );
 
-    return {
-        embeds: [embed],
-        components: [
-            new ActionRowBuilder().addComponents(kitMenu),
-            new ActionRowBuilder().addComponents(rankMenu),
-            buttons
-        ]
-    };
+    return { embeds: [embed], components: [row] };
 }
 
 // =====================
 // COMMAND
 // =====================
+
 const commands = [
     new SlashCommandBuilder()
         .setName("tierpanel")
-        .setDescription("Open tier panel")
+        .setDescription("Open panel")
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -156,24 +135,74 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 })();
 
 // =====================
-// EVENTS
+// READY FIX
 // =====================
-client.once("ready", () => {
+
+client.once("clientReady", () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
+// =====================
+// INTERACTIONS
+// =====================
+
 client.on("interactionCreate", async (i) => {
-    try {
 
-        if (i.isChatInputCommand()) {
-            if (i.commandName === "tierpanel") {
-                panelState.set(i.user.id, {});
-                return i.reply({ ...(buildPanel(i.user.id)), ephemeral: true });
-            }
-        }
+    if (i.isChatInputCommand() && i.commandName === "tierpanel") {
+        panelState.set(i.user.id, {});
+        return i.reply({
+            ...buildPanel(i.user.id),
+            flags: MessageFlags.Ephemeral
+        });
+    }
 
-    } catch (err) {
-        console.error(err);
+    if (i.isButton() && i.customId === "set_player") {
+        const modal = new ModalBuilder()
+            .setCustomId("player_modal")
+            .setTitle("Player");
+
+        const input = new TextInputBuilder()
+            .setCustomId("player")
+            .setLabel("Minecraft Name")
+            .setStyle(TextInputStyle.Short);
+
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+
+        return i.showModal(modal);
+    }
+
+    if (i.isModalSubmit()) {
+        const player = i.fields.getTextInputValue("player");
+
+        const state = panelState.get(i.user.id) || {};
+        state.player = player;
+        panelState.set(i.user.id, state);
+
+        return i.update({
+            ...buildPanel(i.user.id, { message: `Selected ${player}` })
+        });
+    }
+
+    if (i.isButton() && i.customId === "save") {
+        const state = panelState.get(i.user.id);
+
+        await setTier(state.player, state.kit, state.rank);
+
+        return i.update({
+            ...buildPanel(i.user.id, { message: "Saved!" })
+        });
+    }
+
+    if (i.isButton() && i.customId === "remove") {
+        const state = panelState.get(i.user.id);
+
+        await removePlayer(state.player);
+
+        panelState.set(i.user.id, {});
+
+        return i.update({
+            ...buildPanel(i.user.id, { message: "Removed!" })
+        });
     }
 });
 
