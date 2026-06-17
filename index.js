@@ -1,7 +1,7 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes } = require("discord.js");
 
 // =====================
-// CONFIG (Render uses env vars)
+// ENV
 // =====================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -49,7 +49,6 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
             Routes.applicationCommands(CLIENT_ID),
             { body: commands }
         );
-
         console.log("Slash command registered");
     } catch (err) {
         console.error("Command register error:", err);
@@ -57,7 +56,7 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 })();
 
 // =====================
-// BOT READY
+// READY EVENT
 // =====================
 client.once("ready", () => {
     console.log(`Logged in as ${client.user.tag}`);
@@ -75,7 +74,7 @@ client.on("interactionCreate", async (interaction) => {
         const rank = interaction.options.getString("rank");
 
         try {
-            const res = await fetch(`${API_URL}/set`, {
+            const res = await fetch(`${API_URL}/update`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
@@ -83,10 +82,10 @@ client.on("interactionCreate", async (interaction) => {
                 body: JSON.stringify({ player, kit, rank })
             });
 
-            const data = await res.json();
+            const data = await res.json().catch(() => null);
 
-            if (!data.success) {
-                return interaction.reply(`❌ Error: ${data.error}`);
+            if (!data || !data.success) {
+                return interaction.reply("❌ API failed or no response");
             }
 
             return interaction.reply(
