@@ -12,74 +12,53 @@ const {
     StringSelectMenuBuilder,
     ButtonBuilder,
     ButtonStyle,
-    MessageFlags
+    InteractionType
 } = require("discord.js");
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const API_URL = process.env.API_URL || "https://tier-api.onrender.com";
 
-// =====================
-// CLIENT
-// =====================
-
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// =====================
-// STATE
-// =====================
-
 const panelState = new Map();
 
 // =====================
-// CONFIG
+// SAFE FETCH (IMPORTANT FIX)
 // =====================
 
-const BRAND = {
-    name: "SonarMC",
-    color: 0xff6a00
-};
+async function fetchAllPlayers() {
+    const res = await fetch(`${API_URL}/players`);
 
-const KIT_META = {
-    sword: { label: "Sword", emoji: "⚔️" },
-    axe: { label: "Axe", emoji: "🪓" },
-    spearMace: { label: "Spear/Mace", emoji: "🔱" },
-    elytraMace: { label: "Elytra", emoji: "🪽" },
-    crystal: { label: "Crystal", emoji: "💎" }
-};
+    const text = await res.text();
 
-const TIER_META = {
-    HT1: { emoji: "🔴" },
-    HT2: { emoji: "🟠" },
-    HT3: { emoji: "🟡" },
-    LT1: { emoji: "🟢" },
-    LT2: { emoji: "🔵" },
-    LT3: { emoji: "⚫" }
-};
-
-// =====================
-// API
-// =====================
-
-async function fetchPlayers() {
     try {
-        const res = await fetch(`${API_URL}/players`);
-        return await res.json();
-    } catch {
-        return {};
+        return JSON.parse(text);
+    } catch (err) {
+        console.error("BAD API RESPONSE:", text);
+        throw new Error("API did not return JSON (Render might be down)");
     }
 }
 
-async function setTier(player, kit, rank) {
+async function saveTier(player, kit, rank) {
     const res = await fetch(`${API_URL}/set`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ player, kit, rank })
     });
 
-    return res.json();
+    const text = await res.text();
+
+    try {
+        const json = JSON.parse(text);
+        if (!json.success) throw new Error(json.error || "API rejected update");
+        return json;
+    } catch (err) {
+        console.error("SET ERROR RESPONSE:", text);
+        throw new Error("Failed to update API");
+    }
 }
 
 async function removePlayer(player) {
@@ -89,41 +68,76 @@ async function removePlayer(player) {
         body: JSON.stringify({ player })
     });
 
-    return res.json();
+    const text = await res.text();
+
+    try {
+        const json = JSON.parse(text);
+        if (!json.success) throw new Error(json.error || "API rejected");
+        return json;
+    } catch (err) {
+        console.error("REMOVE ERROR RESPONSE:", text);
+        throw new Error("Failed to remove player");
+    }
 }
 
 // =====================
-// PANEL BUILDER
+// HELPERS
 // =====================
 
-function buildPanel(userId, status = null) {
+function getHead(name) {
+    return `https://minotar.net/avatar/${name}/128`;
+}
+
+// =====================
+// PANEL BUILDER (MINIMAL SAFE VERSION)
+// =====================
+
+function buildPanel(userId) {
     const state = panelState.get(userId) || {};
 
-    const ready = state.player && state.kit && state.rank;
-
     const embed = new EmbedBuilder()
-        .setTitle("SonarMC Tier Panel")
-        .setColor(BRAND.color)
-        .setDescription(status?.message || "Select player, kit, and tier.");
+        .setTitle("Tier Panel")
+        .setDescription("Select player, kit, and rank.")
+        .setColor(0xff6a00);
 
-    // PLAYER BUTTON
-    const controls = new ActionRowBuilder().addComponents(
+    const kitMenu = new StringSelectMenuBuilder()
+        .setCustomId("kit")
+        .setPlaceholder("Choose kit")
+        .addOptions([
+            { label: "Sword", value: "sword" },
+            { label: "Axe", value: "axe" },
+            { label: "Spear/Mace", value: "spearMace" },
+            { label: "Elytra Mace", value: "elytraMace" },
+            { label: "Crystal", value: "crystal" }
+        ]);
+
+    const rankMenu = new StringSelectMenuBuilder()
+        .setCustomId("rank")
+        .setPlaceholder("Choose rank")
+        .addOptions([
+            { label: "HT1", value: "HT1" },
+            { label: "HT2", value: "HT2" },
+            { label: "HT3", value: "HT3" },
+            { label: "LT1", value: "LT1" },
+            { label: "LT2", value: "LT2" },
+            { label: "LT3", value: "LT3" }
+        ]);
+
+    const buttons = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("set_player")
-            .setLabel("Player")
+            .setLabel("Set Player")
             .setStyle(ButtonStyle.Primary),
 
         new ButtonBuilder()
             .setCustomId("save")
             .setLabel("Save")
-            .setStyle(ButtonStyle.Success)
-            .setDisabled(!ready),
+            .setStyle(ButtonStyle.Success),
 
         new ButtonBuilder()
             .setCustomId("remove")
             .setLabel("Remove")
-            .setStyle(ButtonStyle.Danger)
-            .setDisabled(!state.player),
+            .setStyle(ButtonStyle.Danger),
 
         new ButtonBuilder()
             .setCustomId("reset")
@@ -131,60 +145,19 @@ function buildPanel(userId, status = null) {
             .setStyle(ButtonStyle.Secondary)
     );
 
-    // KIT MENU
-    const kitMenu = new StringSelectMenuBuilder()
-        .setCustomId("kit")
-        .setPlaceholder(state.kit ? `Kit: ${state.kit}` : "Select Kit")
-        .addOptions(
-            Object.entries(KIT_META).map(([value, kit]) => ({
-                label: kit.label,
-                value,
-                emoji: kit.emoji
-            }))
-        );
-
-    // RANK MENU
-    const rankMenu = new StringSelectMenuBuilder()
-        .setCustomId("rank")
-        .setPlaceholder(state.rank ? `Tier: ${state.rank}` : "Select Tier")
-        .addOptions(
-            Object.entries(TIER_META).map(([value, tier]) => ({
-                label: value,
-                value,
-                emoji: tier.emoji
-            }))
-        );
-
-    embed.addFields(
-        {
-            name: "Player",
-            value: state.player ? `\`${state.player}\`` : "None",
-            inline: true
-        },
-        {
-            name: "Kit",
-            value: state.kit || "None",
-            inline: true
-        },
-        {
-            name: "Tier",
-            value: state.rank || "None",
-            inline: true
-        }
-    );
-
     return {
         embeds: [embed],
         components: [
             new ActionRowBuilder().addComponents(kitMenu),
             new ActionRowBuilder().addComponents(rankMenu),
-            controls
-        ]
+            buttons
+        ],
+        ephemeral: true
     };
 }
 
 // =====================
-// COMMAND REGISTER
+// COMMAND
 // =====================
 
 const commands = [
@@ -201,130 +174,95 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 })();
 
 // =====================
-// READY
+// EVENTS
 // =====================
 
 client.once("ready", () => {
-    console.log(`Logged in as ${client.user.tag}`);
+    console.log("Bot ready");
 });
 
-// =====================
-// INTERACTIONS
-// =====================
+client.on("interactionCreate", async (interaction) => {
+    try {
 
-client.on("interactionCreate", async (i) => {
-
-    // OPEN PANEL
-    if (i.isChatInputCommand() && i.commandName === "tierpanel") {
-        panelState.set(i.user.id, {});
-        return i.reply({
-            ...buildPanel(i.user.id),
-            flags: MessageFlags.Ephemeral
-        });
-    }
-
-    // PLAYER MODAL
-    if (i.isButton() && i.customId === "set_player") {
-        const modal = new ModalBuilder()
-            .setCustomId("player_modal")
-            .setTitle("Set Player");
-
-        const input = new TextInputBuilder()
-            .setCustomId("player")
-            .setLabel("Minecraft Username")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-        modal.addComponents(
-            new ActionRowBuilder().addComponents(input)
-        );
-
-        return i.showModal(modal);
-    }
-
-    if (i.isModalSubmit() && i.customId === "player_modal") {
-        const player = i.fields.getTextInputValue("player");
-
-        const state = panelState.get(i.user.id) || {};
-        state.player = player;
-        panelState.set(i.user.id, state);
-
-        return i.update(buildPanel(i.user.id, {
-            message: `Selected player: ${player}`
-        }));
-    }
-
-    // KIT SELECT
-    if (i.isStringSelectMenu() && i.customId === "kit") {
-        const state = panelState.get(i.user.id) || {};
-        state.kit = i.values[0];
-        panelState.set(i.user.id, state);
-
-        return i.update(buildPanel(i.user.id));
-    }
-
-    // RANK SELECT
-    if (i.isStringSelectMenu() && i.customId === "rank") {
-        const state = panelState.get(i.user.id) || {};
-        state.rank = i.values[0];
-        panelState.set(i.user.id, state);
-
-        return i.update(buildPanel(i.user.id));
-    }
-
-    // RESET
-    if (i.isButton() && i.customId === "reset") {
-        panelState.set(i.user.id, {});
-        return i.update(buildPanel(i.user.id, {
-            message: "Reset complete."
-        }));
-    }
-
-    // SAVE
-    if (i.isButton() && i.customId === "save") {
-        const state = panelState.get(i.user.id);
-
-        if (!state?.player || !state?.kit || !state?.rank) {
-            return i.reply({
-                content: "Fill all fields first.",
-                flags: MessageFlags.Ephemeral
-            });
+        if (interaction.isChatInputCommand()) {
+            if (interaction.commandName === "tierpanel") {
+                panelState.set(interaction.user.id, {});
+                return interaction.reply(buildPanel(interaction.user.id));
+            }
         }
 
-        await i.deferUpdate();
+        if (interaction.isStringSelectMenu()) {
+            const state = panelState.get(interaction.user.id) || {};
 
-        await setTier(state.player, state.kit, state.rank);
+            if (interaction.customId === "kit") {
+                state.kit = interaction.values[0];
+            }
 
-        return i.editReply(buildPanel(i.user.id, {
-            message: `Saved ${state.player} → ${state.kit} = ${state.rank}`
-        }));
-    }
+            if (interaction.customId === "rank") {
+                state.rank = interaction.values[0];
+            }
 
-    // REMOVE
-    if (i.isButton() && i.customId === "remove") {
-        const state = panelState.get(i.user.id);
-
-        if (!state?.player) {
-            return i.reply({
-                content: "Select a player first.",
-                flags: MessageFlags.Ephemeral
-            });
+            panelState.set(interaction.user.id, state);
+            return interaction.update(buildPanel(interaction.user.id));
         }
 
-        await i.deferUpdate();
+        if (interaction.isButton()) {
 
-        await removePlayer(state.player);
+            const state = panelState.get(interaction.user.id) || {};
 
-        panelState.set(i.user.id, {});
+            if (interaction.customId === "reset") {
+                panelState.set(interaction.user.id, {});
+                return interaction.update(buildPanel(interaction.user.id));
+            }
 
-        return i.editReply(buildPanel(i.user.id, {
-            message: `Removed ${state.player}`
-        }));
+            if (interaction.customId === "save") {
+                if (!state.player || !state.kit || !state.rank) {
+                    return interaction.reply({ content: "Missing fields", ephemeral: true });
+                }
+
+                await interaction.deferReply({ ephemeral: true });
+
+                await saveTier(state.player, state.kit, state.rank);
+
+                return interaction.editReply("Saved!");
+            }
+
+            if (interaction.customId === "remove") {
+                if (!state.player) {
+                    return interaction.reply({ content: "No player selected", ephemeral: true });
+                }
+
+                await interaction.deferReply({ ephemeral: true });
+
+                await removePlayer(state.player);
+
+                panelState.set(interaction.user.id, {});
+                return interaction.editReply("Removed!");
+            }
+        }
+
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId === "player_modal") {
+                const player = interaction.fields.getTextInputValue("player");
+
+                const state = panelState.get(interaction.user.id) || {};
+                state.player = player;
+
+                panelState.set(interaction.user.id, state);
+
+                return interaction.update(buildPanel(interaction.user.id));
+            }
+        }
+
+    } catch (err) {
+        console.error(err);
+
+        if (interaction.deferred || interaction.replied) {
+            return interaction.followUp({ content: "Error occurred", ephemeral: true });
+        }
+
+        return interaction.reply({ content: "Error occurred", ephemeral: true });
     }
 });
-
-// =====================
-// LOGIN
-// =====================
 
 client.login(TOKEN);
