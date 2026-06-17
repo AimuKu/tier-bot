@@ -12,7 +12,6 @@ const {
     StringSelectMenuBuilder,
     ButtonBuilder,
     ButtonStyle,
-    InteractionType,
     MessageFlags
 } = require("discord.js");
 
@@ -20,9 +19,17 @@ const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const API_URL = process.env.API_URL || "https://tier-api.onrender.com";
 
+// =====================
+// CLIENT
+// =====================
+
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
+
+// =====================
+// STATE
+// =====================
 
 const panelState = new Map();
 
@@ -35,15 +42,6 @@ const BRAND = {
     color: 0xff6a00
 };
 
-const TIER_META = {
-    HT1: { emoji: "🔴", color: 0xff3b30 },
-    HT2: { emoji: "🟠", color: 0xff6a00 },
-    HT3: { emoji: "🟡", color: 0xffb300 },
-    LT1: { emoji: "🟢", color: 0xcddc39 },
-    LT2: { emoji: "🔵", color: 0x00acc1 },
-    LT3: { emoji: "⚫", color: 0x555555 }
-};
-
 const KIT_META = {
     sword: { label: "Sword", emoji: "⚔️" },
     axe: { label: "Axe", emoji: "🪓" },
@@ -52,14 +50,26 @@ const KIT_META = {
     crystal: { label: "Crystal", emoji: "💎" }
 };
 
+const TIER_META = {
+    HT1: { emoji: "🔴" },
+    HT2: { emoji: "🟠" },
+    HT3: { emoji: "🟡" },
+    LT1: { emoji: "🟢" },
+    LT2: { emoji: "🔵" },
+    LT3: { emoji: "⚫" }
+};
+
 // =====================
 // API
 // =====================
 
 async function fetchPlayers() {
-    const res = await fetch(`${API_URL}/players`);
-    if (!res.ok) return {};
-    return res.json();
+    try {
+        const res = await fetch(`${API_URL}/players`);
+        return await res.json();
+    } catch {
+        return {};
+    }
 }
 
 async function setTier(player, kit, rank) {
@@ -83,20 +93,21 @@ async function removePlayer(player) {
 }
 
 // =====================
-// PANEL
+// PANEL BUILDER
 // =====================
 
-function buildPanel(userId, status) {
+function buildPanel(userId, status = null) {
     const state = panelState.get(userId) || {};
 
     const ready = state.player && state.kit && state.rank;
 
     const embed = new EmbedBuilder()
-        .setTitle("Tier Panel")
+        .setTitle("SonarMC Tier Panel")
         .setColor(BRAND.color)
-        .setDescription(status?.message || "Select a player, kit, and rank.");
+        .setDescription(status?.message || "Select player, kit, and tier.");
 
-    const row = new ActionRowBuilder().addComponents(
+    // PLAYER BUTTON
+    const controls = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("set_player")
             .setLabel("Player")
@@ -112,19 +123,74 @@ function buildPanel(userId, status) {
             .setCustomId("remove")
             .setLabel("Remove")
             .setStyle(ButtonStyle.Danger)
+            .setDisabled(!state.player),
+
+        new ButtonBuilder()
+            .setCustomId("reset")
+            .setLabel("Reset")
+            .setStyle(ButtonStyle.Secondary)
     );
 
-    return { embeds: [embed], components: [row] };
+    // KIT MENU
+    const kitMenu = new StringSelectMenuBuilder()
+        .setCustomId("kit")
+        .setPlaceholder(state.kit ? `Kit: ${state.kit}` : "Select Kit")
+        .addOptions(
+            Object.entries(KIT_META).map(([value, kit]) => ({
+                label: kit.label,
+                value,
+                emoji: kit.emoji
+            }))
+        );
+
+    // RANK MENU
+    const rankMenu = new StringSelectMenuBuilder()
+        .setCustomId("rank")
+        .setPlaceholder(state.rank ? `Tier: ${state.rank}` : "Select Tier")
+        .addOptions(
+            Object.entries(TIER_META).map(([value, tier]) => ({
+                label: value,
+                value,
+                emoji: tier.emoji
+            }))
+        );
+
+    embed.addFields(
+        {
+            name: "Player",
+            value: state.player ? `\`${state.player}\`` : "None",
+            inline: true
+        },
+        {
+            name: "Kit",
+            value: state.kit || "None",
+            inline: true
+        },
+        {
+            name: "Tier",
+            value: state.rank || "None",
+            inline: true
+        }
+    );
+
+    return {
+        embeds: [embed],
+        components: [
+            new ActionRowBuilder().addComponents(kitMenu),
+            new ActionRowBuilder().addComponents(rankMenu),
+            controls
+        ]
+    };
 }
 
 // =====================
-// COMMAND
+// COMMAND REGISTER
 // =====================
 
 const commands = [
     new SlashCommandBuilder()
         .setName("tierpanel")
-        .setDescription("Open panel")
+        .setDescription("Open tier panel")
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -135,10 +201,10 @@ const rest = new REST({ version: "10" }).setToken(TOKEN);
 })();
 
 // =====================
-// READY FIX
+// READY
 // =====================
 
-client.once("clientReady", () => {
+client.once("ready", () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
@@ -148,6 +214,7 @@ client.once("clientReady", () => {
 
 client.on("interactionCreate", async (i) => {
 
+    // OPEN PANEL
     if (i.isChatInputCommand() && i.commandName === "tierpanel") {
         panelState.set(i.user.id, {});
         return i.reply({
@@ -156,54 +223,108 @@ client.on("interactionCreate", async (i) => {
         });
     }
 
+    // PLAYER MODAL
     if (i.isButton() && i.customId === "set_player") {
         const modal = new ModalBuilder()
             .setCustomId("player_modal")
-            .setTitle("Player");
+            .setTitle("Set Player");
 
         const input = new TextInputBuilder()
             .setCustomId("player")
-            .setLabel("Minecraft Name")
-            .setStyle(TextInputStyle.Short);
+            .setLabel("Minecraft Username")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
 
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(input)
+        );
 
         return i.showModal(modal);
     }
 
-    if (i.isModalSubmit()) {
+    if (i.isModalSubmit() && i.customId === "player_modal") {
         const player = i.fields.getTextInputValue("player");
 
         const state = panelState.get(i.user.id) || {};
         state.player = player;
         panelState.set(i.user.id, state);
 
-        return i.update({
-            ...buildPanel(i.user.id, { message: `Selected ${player}` })
-        });
+        return i.update(buildPanel(i.user.id, {
+            message: `Selected player: ${player}`
+        }));
     }
 
+    // KIT SELECT
+    if (i.isStringSelectMenu() && i.customId === "kit") {
+        const state = panelState.get(i.user.id) || {};
+        state.kit = i.values[0];
+        panelState.set(i.user.id, state);
+
+        return i.update(buildPanel(i.user.id));
+    }
+
+    // RANK SELECT
+    if (i.isStringSelectMenu() && i.customId === "rank") {
+        const state = panelState.get(i.user.id) || {};
+        state.rank = i.values[0];
+        panelState.set(i.user.id, state);
+
+        return i.update(buildPanel(i.user.id));
+    }
+
+    // RESET
+    if (i.isButton() && i.customId === "reset") {
+        panelState.set(i.user.id, {});
+        return i.update(buildPanel(i.user.id, {
+            message: "Reset complete."
+        }));
+    }
+
+    // SAVE
     if (i.isButton() && i.customId === "save") {
         const state = panelState.get(i.user.id);
 
+        if (!state?.player || !state?.kit || !state?.rank) {
+            return i.reply({
+                content: "Fill all fields first.",
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        await i.deferUpdate();
+
         await setTier(state.player, state.kit, state.rank);
 
-        return i.update({
-            ...buildPanel(i.user.id, { message: "Saved!" })
-        });
+        return i.editReply(buildPanel(i.user.id, {
+            message: `Saved ${state.player} → ${state.kit} = ${state.rank}`
+        }));
     }
 
+    // REMOVE
     if (i.isButton() && i.customId === "remove") {
         const state = panelState.get(i.user.id);
+
+        if (!state?.player) {
+            return i.reply({
+                content: "Select a player first.",
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        await i.deferUpdate();
 
         await removePlayer(state.player);
 
         panelState.set(i.user.id, {});
 
-        return i.update({
-            ...buildPanel(i.user.id, { message: "Removed!" })
-        });
+        return i.editReply(buildPanel(i.user.id, {
+            message: `Removed ${state.player}`
+        }));
     }
 });
+
+// =====================
+// LOGIN
+// =====================
 
 client.login(TOKEN);
